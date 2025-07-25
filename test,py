@@ -1,0 +1,27 @@
+import smtplib
+
+# Replace with your email & app password
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL = "parthmasurkar205@gmail.com"
+PASSWORD = "mwsh hbjn gsub lgsj"
+
+try:
+    print("Connecting...")
+    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)  # Connect here
+    server.ehlo()
+    server.starttls()
+    server.ehlo()
+    server.login(EMAIL, PASSWORD)
+    print("✅ Login successful!")
+    server.quit()
+except Exception as e:
+    print("❌ Error:", e)
+
+
+from emailer import send_email_alert
+
+send_email_alert(
+    subject="Test: CyberBot Email",
+    body="This is a test email from your bot!"
+)

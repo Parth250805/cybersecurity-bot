@@ -2,19 +2,23 @@ from detector import scan_for_malware
 from notifier import send_alert
 from logger import log_detection
 from killer import kill_process
-from emailer import send_email_alert  # This is your email module
+from emailer import send_email_alert
 import time
 
 print("🛡️ Cybersecurity Bot is now monitoring your system...")
 
+handled_pids = set()  # Store already-detected PIDs
+
 while True:
     suspicious_processes = scan_for_malware()
     for process in suspicious_processes:
-        process_name = process.name()
         pid = process.pid
+        process_name = process.name()
 
-        alert_message = f"Suspicious process found: {process_name} (PID: {pid})"
-        send_alert(alert_message)
+        if pid in handled_pids:
+            continue  # Skip already handled
+
+        send_alert(process_name, pid)
         log_detection(process_name, pid)
         send_email_alert(
             subject="⚠️ Malware Detected!",
@@ -22,4 +26,6 @@ while True:
         )
         kill_process(pid)
 
-    time.sleep(5)  # Adjust as needed
+        handled_pids.add(pid)  # Mark as handled
+
+    time.sleep(5)  # Adjust scan interval

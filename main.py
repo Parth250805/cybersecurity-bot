@@ -10,22 +10,27 @@ print("🛡️ Cybersecurity Bot is now monitoring your system...")
 handled_pids = set()  # Store already-detected PIDs
 
 while True:
-    suspicious_processes = scan_for_malware()
-    for process in suspicious_processes:
-        pid = process.pid
-        process_name = process.name()
+    try:
+        suspicious_processes = scan_for_malware()
+        for process in suspicious_processes:
+            pid = process.pid
+            process_name = process.name()
 
-        if pid in handled_pids:
-            continue  # Skip already handled
+            if pid in handled_pids:
+                continue
 
-        send_alert(process_name, pid)
-        log_detection(process_name, pid)
-        send_email_alert(
-            subject="⚠️ Malware Detected!",
-            body=f"Suspicious process detected:\n{process_name} (PID: {pid})"
-        )
-        kill_process(pid)
+            send_alert(process_name, pid)
+            log_detection(process_name, pid)
+            send_email_alert(
+                subject="⚠️ Malware Detected!",
+                body=f"Suspicious process detected:\n{process_name} (PID: {pid})"
+            )
+            kill_process(pid)
+            handled_pids.add(pid)
 
-        handled_pids.add(pid)  # Mark as handled
+        time.sleep(5)
 
-    time.sleep(5)  # Adjust scan interval
+    except Exception as e:
+        print(f"❌ Error in monitoring loop: {e}")
+        time.sleep(5)  # prevent spamming if it fails
+

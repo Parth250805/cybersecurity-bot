@@ -1,5 +1,511 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
+import os
+import re
+import threading
+import time
+import queue
+import math
+from datetime import datetime
+import psutil
+import yaml
+from collections import deque
+
+from predictor import predict_process_risk
+from killer import kill_process
+from vt_scanner import get_file_hash, check_virustotal
+
+
+class ProSecurityGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("🛡️ Cybersecurity Bot - Professional Control Panel")
+        self.root.geometry("1200x780")
+        self.root.configure(bg="#0a0a0a")
+
+        # Colors
+        self.c = {
+            "bg": "#0a0a0a",
+            "card": "#151515",
+            "panel": "#1f1f1f",
+            "muted": "#9aa0a6",
+            "text": "#ffffff",
+            "blue": "#00d4ff",
+            "green": "#22c55e",
+            "orange": "#ffa502",
+            "red": "#ef4444",
+        }
+
+        # State
+        self.is_monitoring = False
+        self.q = queue.Queue()
+        self.pulse = 0.0
+        # Defaults (can be overridden by config.yaml)
+        self.monitor_interval = 5
+        self.risk_threshold = 0.7
+        self.confirm_kill = True
+        self.safe_mode = True
+        self.allowlist = set()
+        self.denylist = set()
+        self.vt_cache = {}
+        self.vt_times = deque(maxlen=120)  # timestamps for VT rate limiting
+        self.vt_rate_limit_per_min = 10
+        self.show_system_tray = False
+        self._tray_icon = None
+        self._tray_thread = None
+
+        self._load_config()
+
+        # Secret redaction
+        self._secrets_to_redact = []
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:
+            pass
+        vt_key = os.getenv("VT_API_KEY")
+        if vt_key:
+            self._secrets_to_redact.append(vt_key)
+
+        self._build_ui()
+        self._style_ttk()
+        self._tick()
+        self._drain_queue()
+
+    def _style_ttk(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Treeview",
+            background=self.c["panel"],
+            fieldbackground=self.c["panel"],
+            foreground=self.c["text"],
+            borderwidth=0,
+            rowheight=26,
+            font=("Segoe UI", 10),
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=self.c["card"],
+            foreground=self.c["text"],
+            font=("Segoe UI", 10, "bold"),
+            borderwidth=0,
+        )
+
+    def _build_ui(self):
+        # Header
+        header = tk.Frame(self.root, bg=self.c["bg"]) 
+        header.pack(fill="x", padx=20, pady=(16, 8))
+
+        self.pulse_dot = tk.Label(header, text="●", fg=self.c["blue"], bg=self.c["bg"], font=("Segoe UI", 18, "bold"))
+        self.pulse_dot.pack(side="left", padx=(0, 10))
+
+        title = tk.Label(header, text="Cybersecurity Bot", fg=self.c["text"], bg=self.c["bg"], font=("Segoe UI", 26, "bold"))
+        title.pack(side="left")
+        subtitle = tk.Label(header, text="Professional Threat Detection System", fg=self.c["muted"], bg=self.c["bg"], font=("Segoe UI", 11))
+        subtitle.pack(side="left", padx=16)
+
+        self.header_status = tk.Label(header, text="● SYSTEM READY", fg=self.c["green"], bg=self.c["bg"], font=("Segoe UI", 11, "bold"))
+        self.header_status.pack(side="right")
+
+        # Body grid
+        body = tk.Frame(self.root, bg=self.c["bg"]) 
+        body.pack(fill="both", expand=True, padx=20, pady=8)
+
+        left = tk.Frame(body, bg=self.c["bg"]) 
+        left.pack(side="left", fill="y")
+        right = tk.Frame(body, bg=self.c["bg"]) 
+        right.pack(side="right", fill="both", expand=True)
+
+        # Controls card
+        ctrl = self._card(left, "Controls")
+        ctrl.pack(fill="x", pady=(0, 12))
+        row = tk.Frame(ctrl, bg=self.c["card"]) ; row.pack(padx=12, pady=12)
+        self.btn_start = self._button(row, "🚀 Start", self.start)
+        self.btn_start.pack(side="left", padx=6)
+        self.btn_stop = self._button(row, "⏹ Stop", self.stop, kind="danger")
+        self.btn_stop.config(state="disabled")
+        self.btn_stop.pack(side="left", padx=6)
+        self.btn_quick = self._button(row, "🔍 Quick Scan", self.quick_scan, kind="accent")
+        self.btn_quick.pack(side="left", padx=6)
+        self.btn_pause = self._button(row, "⏸ Pause", self.pause, kind="accent")
+        self.btn_pause.pack(side="left", padx=6)
+        self.btn_export = self._button(row, "💾 Export CSV", self.export_csv, kind="accent")
+        self.btn_export.pack(side="left", padx=6)
+
+        # Tray integration
+        if self.show_system_tray:
+            try:
+                self._setup_tray()
+                self.root.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
+                self.root.bind("<Unmap>", self._maybe_minimize_to_tray)
+            except Exception:
+                pass
+
+        # Status card
+        stat = self._card(left, "System Status")
+        stat.pack(fill="x", pady=12)
+        self.lbl_cpu = self._stat_line(stat, "CPU", self.c["blue"]) 
+        self.lbl_ram = self._stat_line(stat, "RAM", self.c["green"]) 
+        self.lbl_proc = self._stat_line(stat, "Processes", self.c["orange"]) 
+
+        # Scanned feed
+        feed = self._card(right, "Scanning Feed (live)")
+        feed.pack(fill="x")
+        self.scanned_list = tk.Listbox(feed, bg=self.c["panel"], fg=self.c["text"], height=8, borderwidth=0, highlightthickness=0, font=("Consolas", 10))
+        self.scanned_list.pack(fill="x", padx=12, pady=(4, 12))
+
+        # Threats table
+        thcard = self._card(right, "Detected Threats")
+        thcard.pack(fill="both", expand=True, pady=(12, 12))
+        cols = ("PID", "Name", "CPU%", "RAM%", "Risk", "VT", "Verdict")
+        self.threats = ttk.Treeview(thcard, columns=cols, show="headings")
+        for c in cols:
+            self.threats.heading(c, text=c)
+            self.threats.column(c, width=140 if c == "Name" else 90, anchor="center")
+        self.threats.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+
+        # Log
+        logc = self._card(right, "Activity Log")
+        logc.pack(fill="x")
+        self.log = scrolledtext.ScrolledText(logc, height=6, bg=self.c["panel"], fg=self.c["text"], insertbackground=self.c["text"], font=("Consolas", 9), borderwidth=0, highlightthickness=0)
+        self.log.pack(fill="x", padx=12, pady=(4, 12))
+
+    def _card(self, parent, title):
+        card = tk.Frame(parent, bg=self.c["card"], bd=0, highlightthickness=1, highlightbackground="#2b2b2b")
+        tk.Label(card, text=title, fg=self.c["text"], bg=self.c["card"], font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=12, pady=(10, 0))
+        tk.Frame(card, bg="#2b2b2b", height=1).pack(fill="x", padx=12, pady=(6, 0))
+        return card
+
+    def _button(self, parent, text, cmd, kind="primary"):
+        bg = self.c["green"] if kind == "primary" else self.c["red"] if kind == "danger" else self.c["blue"]
+        return tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 10, "bold"), bg=bg, fg="#0b0f10", activebackground=bg, activeforeground="#0b0f10", relief="flat", padx=16, pady=10, cursor="hand2")
+
+    def _stat_line(self, parent, label, color):
+        row = tk.Frame(parent, bg=self.c["card"]) ; row.pack(fill="x", padx=12, pady=6)
+        tk.Label(row, text=f"{label}:", fg=self.c["muted"], bg=self.c["card"], font=("Segoe UI", 10)).pack(side="left")
+        v = tk.Label(row, text="-", fg=color, bg=self.c["card"], font=("Segoe UI", 11, "bold"))
+        v.pack(side="right")
+        return v
+
+    def _tick(self):
+        # Pulse animation + system stats
+        self.pulse += 0.14
+        bright = 0.5 + 0.5 * (math.sin(self.pulse))
+        self.pulse_dot.config(fg=self._mix(self.c["blue"], self.c["green"], bright))
+
+        cpu = psutil.cpu_percent(interval=0.1)
+        ram = psutil.virtual_memory().percent
+        self.lbl_cpu.config(text=f"{cpu:.1f}%")
+        self.lbl_ram.config(text=f"{ram:.1f}%")
+        try:
+            self.lbl_proc.config(text=str(len(psutil.pids())))
+        except Exception:
+            pass
+
+        self.root.after(500, self._tick)
+
+    def _drain_queue(self):
+        try:
+            while True:
+                kind, payload = self.q.get_nowait()
+                if kind == "scanned":
+                    pid, name = payload
+                    self._append_feed(f"Scanning: {name} ({pid})")
+                elif kind == "threat":
+                    self._add_threat_row(*payload)
+                elif kind == "log":
+                    self._log(payload)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._drain_queue)
+
+    # Actions
+    def start(self):
+        if self.is_monitoring:
+            return
+        self.is_monitoring = True
+        self.header_status.config(text="● MONITORING", fg=self.c["green"])
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        threading.Thread(target=self._monitor_loop, daemon=True).start()
+        self._log("Monitoring started")
+
+    def stop(self):
+        self.is_monitoring = False
+        self.header_status.config(text="● SYSTEM READY", fg=self.c["green"])
+        self.btn_start.config(state="normal")
+        self.btn_stop.config(state="disabled")
+        self._log("Monitoring stopped")
+
+    def pause(self):
+        if not self.is_monitoring:
+            return
+        self.is_paused = not getattr(self, 'is_paused', False)
+        if self.is_paused:
+            self.header_status.config(text="● PAUSED", fg=self.c["orange"]) 
+            self.btn_pause.config(text="▶ Resume")
+            self._log("Monitoring paused")
+        else:
+            self.header_status.config(text="● MONITORING", fg=self.c["green"]) 
+            self.btn_pause.config(text="⏸ Pause")
+            self._log("Monitoring resumed")
+
+    def quick_scan(self):
+        self._log("Quick scan initiated")
+        threading.Thread(target=self._scan_once, daemon=True).start()
+
+    # Scanning
+    def _monitor_loop(self):
+        while self.is_monitoring:
+            if not getattr(self, 'is_paused', False):
+                self._scan_once()
+            time.sleep(self.monitor_interval)
+
+    def _scan_once(self):
+        try:
+            # Sample processes to reduce overhead
+            procs = list(psutil.process_iter(["pid", "name"]))
+            snap = []
+            for pr in procs:
+                try:
+                    snap.append((pr, pr.cpu_percent(interval=0.0)))
+                except Exception:
+                    continue
+            snap.sort(key=lambda x: x[1], reverse=True)
+            candidates = [p for p,_ in snap[:50]] + [p for p,_ in snap[50:100:2]]
+            for proc in candidates:
+                try:
+                    pid = proc.info["pid"]
+                    name = (proc.info["name"] or "<unknown>")
+                    name_lower = name.lower()
+                    if name_lower in self.allowlist:
+                        continue
+                    self.q.put(("scanned", (pid, name)))
+
+                    p = psutil.Process(pid)
+                    cpu = p.cpu_percent(interval=0.05)
+                    mem = p.memory_percent()
+                    threads = p.num_threads()
+                    # psutil.connections() is deprecated; use net_connections()
+                    conns = len(p.net_connections())
+                    risk = float(predict_process_risk([[cpu, mem, threads, conns]]))
+                    if name_lower in self.denylist:
+                        risk = max(risk, 0.99)
+
+                    vt_verdict = "-"
+                    if risk >= self.risk_threshold:
+                        # Optional VirusTotal check using file hash
+                        try:
+                            exe_path = p.exe()
+                        except Exception:
+                            exe_path = None
+                        h = get_file_hash(exe_path) if exe_path else None
+                        if h:
+                            # simple per-minute rate limiting
+                            now = time.time()
+                            while self.vt_times and now - self.vt_times[0] > 60:
+                                self.vt_times.popleft()
+                            if len(self.vt_times) < self.vt_rate_limit_per_min:
+                                self.vt_times.append(now)
+                                vt_bool, _stats = check_virustotal(h)
+                            else:
+                                vt_bool = None
+                            if vt_bool is True:
+                                vt_verdict = "Malicious"
+                            elif vt_bool is False:
+                                vt_verdict = "Clean"
+                            else:
+                                vt_verdict = "Unknown"
+                        self.q.put(("threat", (pid, name, cpu, mem, risk, vt_verdict)))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            self.q.put(("log", "Scan completed"))
+        except Exception as e:
+            self.q.put(("log", f"Scan error: {e}"))
+
+    # UI helpers
+    def _add_threat_row(self, pid, name, cpu, mem, risk, vt_verdict="-"):
+        verdict = "CRITICAL" if risk > 0.85 else "HIGH" if risk > 0.7 else "SUSPICIOUS"
+        self.threats.insert("", "end", values=(pid, name, f"{cpu:.1f}", f"{mem:.1f}", f"{risk:.2f}", vt_verdict, verdict))
+        if risk >= self.risk_threshold:
+            self._log(f"Threat: {name} ({pid}) risk {risk:.2f}")
+
+    def _append_feed(self, line):
+        self.scanned_list.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {line}")
+        if self.scanned_list.size() > 200:
+            self.scanned_list.delete(0)
+        self.scanned_list.see("end")
+
+    def _log(self, line):
+        safe = self._redact_text(line)
+        self.log.insert("end", f"[{datetime.now().strftime('%H:%M:%S')}] {safe}\n")
+        self.log.see("end")
+
+    def _log_json(self, obj):
+        try:
+            import json
+            def _redact_any(x):
+                if isinstance(x, str):
+                    return self._redact_text(x)
+                if isinstance(x, dict):
+                    return {k: _redact_any(v) for k, v in x.items()}
+                if isinstance(x, (list, tuple)):
+                    t = type(x)
+                    return t(_redact_any(v) for v in x)
+                return x
+            safe_obj = _redact_any(obj)
+            with open("detection.log.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(safe_obj, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _redact_text(self, text):
+        try:
+            safe = str(text)
+            for secret in self._secrets_to_redact:
+                if secret:
+                    safe = safe.replace(secret, "[REDACTED]")
+            # Also redact common API key patterns (basic heuristic)
+            safe = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)([A-Za-z0-9_\-]{16,})", r"\1[REDACTED]", safe)
+            return safe
+        except Exception:
+            return text
+
+    # ---- System tray integration ----
+    def _setup_tray(self):
+        try:
+            import pystray
+            from PIL import Image
+        except Exception as e:
+            self._log(f"Tray not available: {e}")
+            return
+        icon_path = os.path.abspath("icon.ico")
+        image = None
+        try:
+            if os.path.exists(icon_path):
+                from PIL import Image
+                image = Image.open(icon_path)
+        except Exception:
+            image = None
+        if image is None:
+            try:
+                from PIL import Image
+                image = Image.new("RGB", (64, 64), color=(15, 120, 200))
+            except Exception:
+                pass
+        import pystray
+        menu = pystray.Menu(
+            pystray.MenuItem("Show", lambda: self._restore_from_tray()),
+            pystray.MenuItem("Quit", lambda: self._quit_from_tray()),
+        )
+        self._tray_icon = pystray.Icon("Cybersecurity Bot", image, "Cybersecurity Bot", menu)
+
+        def run_icon():
+            try:
+                self._tray_icon.run()
+            except Exception:
+                pass
+        import threading as _th
+        self._tray_thread = _th.Thread(target=run_icon, daemon=True)
+        self._tray_thread.start()
+
+    def _maybe_minimize_to_tray(self, event=None):
+        try:
+            if self.root.state() == 'iconic' and self._tray_icon is not None:
+                self.root.withdraw()
+                self._log("Minimized to tray")
+        except Exception:
+            pass
+
+    def _on_close_to_tray(self):
+        if self._tray_icon is not None:
+            try:
+                self.root.withdraw()
+                self._log("Running in tray. Use tray menu to Quit or Show.")
+                return
+            except Exception:
+                pass
+        # fallback: normal close
+        self.root.destroy()
+
+    def _restore_from_tray(self):
+        try:
+            self.root.deiconify()
+            self.root.state('normal')
+            self.root.after(0, self.root.lift)
+        except Exception:
+            pass
+
+    def _quit_from_tray(self):
+        try:
+            self.is_monitoring = False
+            if self._tray_icon is not None:
+                try:
+                    self._tray_icon.stop()
+                except Exception:
+                    pass
+            self.root.after(0, self.root.destroy)
+        except Exception:
+            os._exit(0)
+
+    def export_csv(self):
+        try:
+            path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], initialfile="threats_export.csv")
+            if not path:
+                return
+            import csv
+            cols = ("PID","Name","CPU%","RAM%","Risk","VT","Verdict")
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(cols)
+                for iid in self.threats.get_children():
+                    w.writerow(self.threats.item(iid, "values"))
+            messagebox.showinfo("Export", f"Exported to {path}")
+        except Exception as e:
+            messagebox.showerror("Export", f"Failed to export: {e}")
+
+    def _load_config(self):
+        try:
+            with open("config.yaml", "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            self.monitor_interval = int(cfg.get("monitor_interval_seconds", self.monitor_interval))
+            self.risk_threshold = float(cfg.get("risk_score_kill_threshold", self.risk_threshold))
+            self.confirm_kill = bool(cfg.get("confirm_kill", self.confirm_kill))
+            self.safe_mode = bool(cfg.get("safe_mode", self.safe_mode))
+            self.vt_rate_limit_per_min = int(cfg.get("vt_rate_limit_per_min", self.vt_rate_limit_per_min))
+            self.allowlist = set([s.lower() for s in cfg.get("whitelist", [])])
+            self.denylist = set([s.lower() for s in cfg.get("blacklist", [])])
+            self.show_system_tray = bool(cfg.get("show_system_tray", self.show_system_tray))
+            self.minimize_to_tray = bool(cfg.get("minimize_to_tray", True))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _mix(hex1, hex2, t):
+        def to_rgb(h):
+            h = h.lstrip('#'); return tuple(int(h[i:i+2], 16) for i in (0,2,4))
+        def to_hex(rgb):
+            return '#%02x%02x%02x' % rgb
+        a = to_rgb(hex1); b = to_rgb(hex2)
+        m = (int(a[0]*(1-t)+b[0]*t), int(a[1]*(1-t)+b[1]*t), int(a[2]*(1-t)+b[2]*t))
+        return to_hex(m)
+
+
+def main():
+    root = tk.Tk()
+    try:
+        root.iconbitmap('icon.ico')
+    except Exception:
+        pass
+    app = ProSecurityGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import threading
 import time
 import queue

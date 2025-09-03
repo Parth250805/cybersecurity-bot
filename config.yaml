@@ -1,0 +1,61 @@
+# Cybersecurity Bot Configuration
+# Level 1 Professional Features
+
+# Monitoring Settings
+monitor_interval_seconds: 5
+risk_score_kill_threshold: 0.7
+
+# Safety & Confirmation Settings
+confirm_kill: true
+safe_mode: true
+
+# VirusTotal Integration
+vt_rate_limit_per_min: 10
+vt_cache_ttl_minutes: 60
+vt_cache_file: "vt_cache.json"
+
+# Process Lists
+whitelist:
+  - "chrome.exe"
+  - "firefox.exe"
+  - "edge.exe"
+  - "notepad.exe"
+  - "explorer.exe"
+  - "winlogon.exe"
+  - "csrss.exe"
+  - "wininit.exe"
+  - "services.exe"
+  - "lsass.exe"
+  - "svchost.exe"
+  - "dwm.exe"
+  - "taskhost.exe"
+  - "audiodg.exe"
+  - "conhost.exe"
+  - "python.exe"
+  - "code.exe"
+  - "cursor.exe"
+
+blacklist:
+  - "badtool.exe"
+  - "malware.exe"
+  - "virus.exe"
+  - "trojan.exe"
+  - "backdoor.exe"
+  - "keylogger.exe"
+  - "rootkit.exe"
+
+# Advanced Settings
+max_processes_to_scan: 100
+enable_behavioral_analysis: true
+enable_network_monitoring: true
+log_level: "INFO"
+
+# Email Notifications (if configured)
+email_alerts: false
+email_recipients: []
+
+# GUI Settings
+theme: "dark"
+auto_start_monitoring: false
+show_system_tray: false
+minimize_to_tray: true

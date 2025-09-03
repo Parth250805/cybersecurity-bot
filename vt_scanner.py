@@ -1,7 +1,11 @@
 import hashlib
 import requests
 import os
+import time
+import json
+from collections import deque
 from dotenv import load_dotenv
+import yaml
 
 load_dotenv()
 
@@ -11,6 +15,44 @@ VT_URL = "https://www.virustotal.com/api/v3/files/"
 headers = {
     "x-apikey": API_KEY
 }
+
+# Load settings from config.yaml (with safe defaults)
+def _load_config():
+    cfg = {}
+    try:
+        with open("config.yaml", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    ttl_min = int(cfg.get("vt_cache_ttl_minutes", 60))
+    cache_path = cfg.get("vt_cache_file", "vt_cache.json")
+    rate_per_min = int(cfg.get("vt_rate_limit_per_min", 10))
+    return ttl_min, cache_path, rate_per_min
+
+_VT_TTL_MINUTES, _VT_CACHE_PATH, _VT_RATE_PER_MIN = _load_config()
+_vt_cache = None
+_vt_times = deque(maxlen=120)
+
+def _load_cache():
+    global _vt_cache
+    if _vt_cache is not None:
+        return _vt_cache
+    try:
+        if os.path.exists(_VT_CACHE_PATH):
+            with open(_VT_CACHE_PATH, "r", encoding="utf-8") as f:
+                _vt_cache = json.load(f)
+        else:
+            _vt_cache = {}
+    except Exception:
+        _vt_cache = {}
+    return _vt_cache
+
+def _save_cache():
+    try:
+        with open(_VT_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_vt_cache or {}, f)
+    except Exception:
+        pass
 
 def get_file_hash(file_path):
     """Calculate the SHA256 hash of the given file."""
@@ -23,22 +65,43 @@ def get_file_hash(file_path):
         return None
 
 def check_virustotal(file_hash):
-    """Check the hash against VirusTotal API."""
+    """Check the hash against VirusTotal API with cache and rate limiting.
+
+    Returns: (bool|None verdict, dict stats)
+      True -> malicious, False -> clean, None -> unknown/error
+    """
+    # Cache lookup
+    cache = _load_cache()
+    now = time.time()
+    entry = cache.get(file_hash)
+    if entry and (now - entry.get("ts", 0) <= _VT_TTL_MINUTES * 60):
+        verdict = entry.get("verdict")
+        stats = entry.get("stats", {})
+        return verdict, stats
+
+    # Rate limiting (per minute)
+    while _vt_times and now - _vt_times[0] > 60:
+        _vt_times.popleft()
+    if len(_vt_times) >= _VT_RATE_PER_MIN:
+        # Defer: treat as unknown for now
+        return None, {}
+
     try:
-        response = requests.get(VT_URL + file_hash, headers=headers)
+        _vt_times.append(now)
+        response = requests.get(VT_URL + file_hash, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            malicious_count = data["data"]["attributes"]["last_analysis_stats"]["malicious"]
             stats = data["data"]["attributes"]["last_analysis_stats"]
-            if malicious_count > 0:
-                return True, stats  # Malicious
-            else:
-                return False, stats  # Clean
+            malicious_count = stats.get("malicious", 0)
+            verdict = True if malicious_count > 0 else False
+            cache[file_hash] = {"verdict": verdict, "stats": stats, "ts": now}
+            _save_cache()
+            return verdict, stats
         elif response.status_code == 404:
-            return None, {}  # Not found in VirusTotal
-        else:
-            print(f"⚠️ VirusTotal API error: {response.status_code}")
+            cache[file_hash] = {"verdict": None, "stats": {}, "ts": now}
+            _save_cache()
             return None, {}
-    except Exception as e:
-        print(f"❌ Error calling VirusTotal: {e}")
+        else:
+            return None, {}
+    except Exception:
         return None, {}

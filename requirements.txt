@@ -1,0 +1,20 @@
+# Core dependencies
+python-dotenv
+requests
+PyYAML
+colorama
+psutil
+
+# Optional developer tools
+black
+autoflake
+
+# For GUI
+tk
+
+# For ML / data
+scikit-learn
+pandas
+
+ 
+ 

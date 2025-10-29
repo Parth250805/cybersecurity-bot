@@ -1,0 +1,8 @@
+from pathlib import Path
+
+FILE_PATH = Path(__file__).resolve().parents[1] / "detection.log"
+# logger.py
+
+def log_detection(process_name, pid):
+    with open(FILE_PATH, "r"), "a") as log_file:
+        log_file.write(f"Suspicious process: {process_name} (PID: {pid})\n")

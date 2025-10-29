@@ -1,0 +1,7 @@
+pid,name,cpu_percent,memory_percent,num_threads,num_connections,is_suspicious
+0,System Idle Process,0.0,0.0,1,0,0
+4,System,0.0,0.0,4,0,0
+100,explorer.exe,1.2,0.5,10,2,0
+236,chrome.exe,3.5,2.3,15,5,0
+10000,suspicious_0.exe,80.0,50.0,20,10,1
+10001,malware1.exe,90.0,40.0,30,12,1

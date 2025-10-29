@@ -1,0 +1,154 @@
+# config.yaml
+monitor_interval_seconds: 5
+cpu_high_threshold: 50
+memory_high_threshold: 30
+risk_score_kill_threshold: 0.7
+email_alerts: true
+popups: true
+
+whitelist:
+  # Windows system & helpers
+  - system
+  - system idle process
+  - smss.exe
+  - csrss.exe
+  - wininit.exe
+  - winlogon.exe
+  - svchost.exe
+  - spoolsv.exe
+  - lsass.exe
+  - services.exe
+  - explorer.exe
+  - taskhostw.exe
+  - fontdrvhost.exe
+  - conhost.exe
+  - SearchIndexer.exe
+  - RuntimeBroker.exe
+  - dwm.exe
+  - ctfmon.exe
+  - ShellExperienceHost.exe
+  - SecurityHealthService.exe
+  - StartMenuExperienceHost.exe
+
+  # Browsers and productivity
+  - chrome.exe
+  - msedge.exe
+  - firefox.exe
+  - opera.exe
+  - brave.exe
+  - outlook.exe
+  - word.exe
+  - excel.exe
+  - powerpnt.exe
+  - notepad.exe
+  - notepad++.exe
+  - onedrive.exe
+  - MicrosoftEdgeUpdate.exe
+  - Code.exe
+  - pycharm64.exe
+  - sublime_text.exe
+  - atom.exe
+
+  # Dev tools / scripting
+  - python.exe
+  - pythonw.exe
+  - node.exe
+  - java.exe
+  - git.exe
+  - powershell.exe
+  - pwsh.exe
+  - cmd.exe
+  - bash.exe
+  - wsl.exe
+
+  # Updater/Defender/Drivers
+  - Wuauclt.exe
+  - MsMpEng.exe
+  - TrustedInstaller.exe
+  - igfxTray.exe
+  - NVDisplay.Container.exe
+  - MemCompression
+
+  # Common apps/services/helpers
+  - slack.exe
+  - zoom.exe
+  - AdobeARM.exe
+  - Dropbox.exe
+  - VMtoolsd.exe
+  - vmware-vmx.exe
+  - vmware-tray.exe
+  - vmware-hostd.exe
+  - steam.exe
+  - Discord.exe
+  - Microsoft.SharePoint.exe
+  - OneDrive.exe
+  - SearchApp.exe
+  - SearchIndexer.exe
+  - WmiPrvSE.exe
+  - winlogon.exe
+  - wuauclt.exe
+  - YourAppName.exe    # Add your app names as needed
+
+
+blacklist:
+  # Common malware/RATs/keyloggers
+  - malware.exe
+  - virus.exe
+  - keylogger.exe
+  - stealer.exe
+  - infostealer.exe
+  - ransomware.exe
+  - cryptolocker.exe
+  - trojan.exe
+  - exploit.exe
+  - bot.exe
+  - botnet.exe
+  - ddosbot.exe
+  - rat.exe
+  - njrat.exe
+  - darkcomet.exe
+  - nanocore.exe
+  - agenttesla.exe
+  - remcos.exe
+  - quasar.exe
+  - ardamax.exe
+  - spyware.exe
+  - netwire.exe
+  - venomrat.exe
+  - asyncrat.exe
+  - orcus.exe
+  - venom.exe
+
+  # Pen-testing/hacking tools (rarely used by regular users)
+  - mimikatz.exe
+  - metasploit.exe
+  - meterpreter.exe
+  - ncat.exe
+  - netcat.exe
+  - hydra.exe
+  - john.exe
+  - hashcat.exe
+  - cain.exe
+  - empire.exe
+  - cobaltstrike.exe
+  - powersploit.exe
+  - pwdump.exe
+  - procdump.exe
+
+  # Known aggressive/abused remote tools
+  - teamviewer.exe   # Add only if your org doesn't use legit TeamViewer
+  - anydesk.exe      # Same note as above
+  - ultraviewer.exe
+  - radmin.exe
+  - splashtop.exe
+
+  # Others
+  - inject.exe
+  - hacktool.exe
+  - hack.exe
+  - backdoor.exe
+  - coinminer.exe
+  - XMRig.exe
+  - miner.exe
+  - updateme.exe
+  - randomstring.exe   # Placeholder for random sus process names

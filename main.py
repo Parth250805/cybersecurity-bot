@@ -1,8 +1,22 @@
 import os
+import sys
+from pathlib import Path
+
+# Ensure we run with the project's virtual environment so dependencies are available
+try:
+    if not os.environ.get("VIRTUAL_ENV"):
+        _here = Path(__file__).resolve()
+        _project_root = _here.parent
+        venv_python = _project_root / ".venv" / "Scripts" / "python.exe"
+        if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+            os.execv(str(venv_python), [str(venv_python), str(_here)] + sys.argv[1:])
+except Exception:
+    pass
 import time
+import signal
+import threading
 import yaml
 import psutil
-from pathlib import Path
 from dotenv import load_dotenv
 
 # === FIXED CONFIG PATH (works anywhere) ===
@@ -39,17 +53,42 @@ POPUP_ALERTS = config.get("popups", True)
 WHITELIST = set(name.lower() for name in config.get("whitelist", []))
 BLACKLIST = set(name.lower() for name in config.get("blacklist", []))
 
+DEBUG = False
+try:
+    DEBUG = bool(int(os.environ.get("CSBOT_DEBUG", "0")))
+except Exception:
+    DEBUG = False
+
 print(f"🛡️ Cybersecurity Bot is now monitoring your system...")
-print(f"✅ Using config file: {CONFIG_PATH}")
+if DEBUG:
+    print(f"✅ Using config file: {CONFIG_PATH}")
 
 handled_pids = set()
 
-# === MAIN LOOP ===
-while True:
+# === Graceful shutdown via Ctrl+C ===
+stop_event = threading.Event()
+
+def _handle_sigint(signum, frame):
     try:
-        suspicious_processes = scan_for_malware()
+        stop_event.set()
+        print("\n🛑 Stopping... (Ctrl+C)")
+    except Exception:
+        pass
+
+try:
+    signal.signal(signal.SIGINT, _handle_sigint)
+except Exception:
+    # On some environments signal handling may not be available; fallback to KeyboardInterrupt
+    pass
+
+# === MAIN LOOP ===
+try:
+    while not stop_event.is_set():
+        suspicious_processes = scan_for_malware(stop_event)
 
         for process in suspicious_processes:
+            if stop_event.is_set():
+                break
             pid = process.pid
             process_name = process.name()
 
@@ -71,14 +110,22 @@ while True:
 
             # === ML Prediction ===
             try:
-                cpu = process.cpu_percent(interval=0.1)
+                if stop_event.is_set():
+                    break
+                # Non-blocking CPU sample to avoid delays
+                cpu = process.cpu_percent(interval=0.0)
                 memory = process.memory_percent()
                 num_threads = process.num_threads()
-                num_connections = len(process.connections())
+                # Use net_connections to avoid deprecation warnings
+                try:
+                    num_connections = len(process.net_connections())
+                except Exception:
+                    num_connections = 0
                 features = [[cpu, memory, num_threads, num_connections]]
                 risk_score = predict_process_risk(features)
             except Exception as e:
-                print(f"⚠️ ML prediction failed: {e}")
+                if DEBUG:
+                    print(f"⚠️ ML prediction failed: {e}")
                 risk_score = -1
 
             # === Email/Alert Message ===
@@ -111,8 +158,9 @@ while True:
 
             handled_pids.add(pid)
 
-        time.sleep(MONITOR_INTERVAL)
-
-    except Exception as e:
-        print(f"❌ Error in monitoring loop: {e}")
-        time.sleep(MONITOR_INTERVAL)
+        if stop_event.wait(MONITOR_INTERVAL):
+            break
+except KeyboardInterrupt:
+    print("\n🛑 Stopped by user.")
+except Exception as e:
+    print(f"❌ Error in monitoring loop: {e}")

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 import os
@@ -17,7 +16,7 @@ from collections import deque
 
 from cybersecurity_bot.core.predictor import predict_process_risk
 from cybersecurity_bot.utils.killer import kill_process
-from cybersecurity_bot.core.vt_scanner import get_file_hash, check_virustotal
+from cybersecurity_bot.utils.vt_scanner import get_file_hash, check_virustotal
 
 
 class ProSecurityGUI:
@@ -471,7 +470,7 @@ class ProSecurityGUI:
 
     def _load_config(self):
         try:
-            with open(CONFIG_PATH, "r"), "r", encoding="utf-8") as f:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
             self.monitor_interval = int(cfg.get("monitor_interval_seconds", self.monitor_interval))
             self.risk_threshold = float(cfg.get("risk_score_kill_threshold", self.risk_threshold))
@@ -1595,7 +1594,7 @@ class CybersecurityBotGUI:
             }
             
             import yaml
-            with open(CONFIG_PATH, "r"), "w") as f:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f)
                 
             self.log_message("💾 Configuration saved successfully")

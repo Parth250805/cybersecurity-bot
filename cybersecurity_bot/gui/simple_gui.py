@@ -22,7 +22,7 @@ from cybersecurity_bot.utils.notifier import send_alert
 from cybersecurity_bot.utils.logger import log_detection
 from cybersecurity_bot.utils.killer import kill_process
 from cybersecurity_bot.utils.emailer import send_email_alert
-from cybersecurity_bot.core.vt_scanner import get_file_hash, check_virustotal
+from cybersecurity_bot.utils.vt_scanner import get_file_hash, check_virustotal
 from cybersecurity_bot.core.predictor import predict_process_risk
 
 class SimpleCybersecurityBotGUI:
@@ -52,6 +52,7 @@ class SimpleCybersecurityBotGUI:
         self.is_monitoring = False
         self.monitor_thread = None
         self.message_queue = queue.Queue()
+        self.stop_event = threading.Event()
         
         # Configuration
         self.config = {
@@ -371,8 +372,13 @@ class SimpleCybersecurityBotGUI:
         
     def start_monitoring(self):
         """Start the monitoring thread"""
-        if not self.is_monitoring:
+        if self.is_monitoring:
+            return
+        if self.monitor_thread is not None and self.monitor_thread.is_alive():
+            return
+        try:
             self.is_monitoring = True
+            self.stop_event.clear()
             self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
             self.monitor_thread.start()
             
@@ -381,11 +387,20 @@ class SimpleCybersecurityBotGUI:
             self.stop_button.config(state='normal')
             
             self.log_message("🛡️ Cybersecurity Bot monitoring started")
+        except Exception as e:
+            self.is_monitoring = False
+            self.log_message(f"❌ Failed to start monitoring: {e}")
             
     def stop_monitoring(self):
         """Stop the monitoring thread"""
         if self.is_monitoring:
             self.is_monitoring = False
+            self.stop_event.set()
+            try:
+                if self.monitor_thread is not None:
+                    self.monitor_thread.join(timeout=1.0)
+            except Exception:
+                pass
             
             self.status_label.config(text="🔴 STOPPED", fg=self.colors['danger'])
             self.start_button.config(state='normal')
@@ -412,7 +427,7 @@ class SimpleCybersecurityBotGUI:
         
     def monitor_loop(self):
         """Main monitoring loop (runs in separate thread)"""
-        while self.is_monitoring:
+        while not self.stop_event.is_set():
             try:
                 # Update configuration
                 self.config['monitor_interval'] = int(self.interval_var.get())
@@ -420,8 +435,20 @@ class SimpleCybersecurityBotGUI:
                 self.config['email_alerts'] = self.email_var.get()
                 self.config['popup_alerts'] = self.popup_var.get()
                 
-                # Perform scan
-                suspicious_processes = scan_for_malware()
+                # Perform scan in a short-lived thread so Stop can cancel promptly
+                suspicious_processes = []
+                def _do_scan():
+                    try:
+                        res = scan_for_malware(self.stop_event)
+                        suspicious_processes.extend(res or [])
+                    except Exception as _e:
+                        self.message_queue.put(('error', f"Scan error: {_e}"))
+                t = threading.Thread(target=_do_scan, daemon=True)
+                t.start()
+                while t.is_alive():
+                    if self.stop_event.wait(0.1):
+                        return
+                    time.sleep(0.05)
                 self.message_queue.put(('scan_complete', len(suspicious_processes)))
                 
                 # Process each suspicious process
@@ -429,11 +456,13 @@ class SimpleCybersecurityBotGUI:
                     self.message_queue.put(('threat_detected', process))
                     
                 # Wait for next scan
-                time.sleep(self.config['monitor_interval'])
+                if self.stop_event.wait(self.config['monitor_interval']):
+                    break
                 
             except Exception as e:
                 self.message_queue.put(('error', f"Monitoring error: {e}"))
-                time.sleep(5)  # Wait before retrying
+                if self.stop_event.wait(5):
+                    break
                 
     def check_queue(self):
         """Check for messages from monitoring thread"""
@@ -519,7 +548,7 @@ class SimpleCybersecurityBotGUI:
             }
             
             import yaml
-            with open(CONFIG_PATH, "r"), "w") as f:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f)
                 
             self.log_message("💾 Configuration saved successfully")

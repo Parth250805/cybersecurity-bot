@@ -17,18 +17,29 @@ SUSPICIOUS_KEYWORDS = [
     "rat", "spy", "inject", "virus", "hack", "ddos",
 ]
 
-def scan_for_malware():
+def scan_for_malware(stop_event=None):
     suspicious = []
-    print("🔍 Scanning processes...")
+    # Verbose by default; set CSBOT_DEBUG=0 to silence
+    DEBUG = True
+    try:
+        import os as _os
+        DEBUG = bool(int(_os.environ.get("CSBOT_DEBUG", "1")))
+    except Exception:
+        DEBUG = True
+    if DEBUG:
+        print("🔍 Scanning processes...")
 
     for process in psutil.process_iter(['pid', 'name']):
+        if stop_event is not None and getattr(stop_event, 'is_set', lambda: False)():
+            break
         try:
             name = process.info['name']
             if not name:
                 continue
 
             name_lower = name.lower()
-            print(f"Found: {name}")  # Debug
+            if DEBUG:
+                print(f"Found: {name}")
 
             # Skip if process is whitelisted
             if name_lower in WHITELIST:
@@ -36,21 +47,25 @@ def scan_for_malware():
 
             # Immediately flag if blacklisted
             if name_lower in BLACKLIST:
-                print(f"🚨 Blacklist match: {name}")
+                if DEBUG:
+                    print(f"🚨 Blacklist match: {name}")
                 suspicious.append(process)
                 continue
 
             # Check for suspicious keywords
             if any(keyword in name_lower for keyword in SUSPICIOUS_KEYWORDS):
-                print(f"🚨 Suspicious keyword match: {name}")
+                if DEBUG:
+                    print(f"🚨 Suspicious keyword match: {name}")
                 suspicious.append(process)
                 continue
 
             # Behavior check: high CPU or memory usage
-            cpu = process.cpu_percent(interval=0.5)
+            # Use non-blocking CPU sampling to avoid long sleeps during cancellation
+            cpu = process.cpu_percent(interval=0.0)
             mem = process.memory_percent()
             if cpu > 50 or mem > 30:
-                print(f"⚠️ High resource usage: {name} (CPU: {cpu}%, MEM: {mem:.2f}%)")
+                if DEBUG:
+                    print(f"⚠️ High resource usage: {name} (CPU: {cpu}%, MEM: {mem:.2f}%)")
                 suspicious.append(process)
 
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):

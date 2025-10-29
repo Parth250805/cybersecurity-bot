@@ -523,7 +523,7 @@ from cybersecurity_bot.utils.notifier import send_alert
 from cybersecurity_bot.utils.logger import log_detection
 from cybersecurity_bot.utils.killer import kill_process
 from cybersecurity_bot.utils.emailer import send_email_alert
-from cybersecurity_bot.core.vt_scanner import get_file_hash, check_virustotal
+from cybersecurity_bot.utils.vt_scanner import get_file_hash, check_virustotal
 from cybersecurity_bot.core.predictor import predict_process_risk
 
 class CybersecurityBotGUI:

@@ -25,6 +25,7 @@ CURRENT_DIR = Path(__file__).resolve()
 for parent in CURRENT_DIR.parents:
     if (parent / "cybersecurity_bot" / "config" / "config.yaml").exists():
         CONFIG_PATH = parent / "cybersecurity_bot" / "config" / "config.yaml"
+        PROJECT_ROOT = parent
         break
 else:
     raise FileNotFoundError(
@@ -81,8 +82,17 @@ except Exception:
     # On some environments signal handling may not be available; fallback to KeyboardInterrupt
     pass
 
-# === MAIN LOOP ===
+# === Single-instance lock ===
+LOCK_PATH = PROJECT_ROOT / ".run.lock"
+_lock_fd = None
 try:
+    try:
+        _lock_fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        print("⚠️ Another instance is already running. Exiting.")
+        sys.exit(0)
+
+    # === MAIN LOOP ===
     while not stop_event.is_set():
         suspicious_processes = scan_for_malware(stop_event)
 
@@ -164,3 +174,11 @@ except KeyboardInterrupt:
     print("\n🛑 Stopped by user.")
 except Exception as e:
     print(f"❌ Error in monitoring loop: {e}")
+finally:
+    try:
+        if _lock_fd is not None:
+            os.close(_lock_fd)
+        if LOCK_PATH.exists():
+            LOCK_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass

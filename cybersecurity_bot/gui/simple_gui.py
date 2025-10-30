@@ -1,11 +1,4 @@
 from pathlib import Path
-
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
-#!/usr/bin/env python3
-"""
-Simplified version of the cybersecurity bot GUI
-"""
-
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import threading
@@ -15,8 +8,21 @@ import os
 import math
 from datetime import datetime
 import psutil
+import subprocess
+import sys
+import yaml
 
-# Import your existing modules
+# Get the paths
+MAIN_PY = Path(__file__).resolve().parents[2] / "main.py"
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
+LOCK_PATH = Path(__file__).resolve().parents[2] / ".run.lock"
+
+# Try to remove stale lock file
+try:
+    LOCK_PATH.unlink(missing_ok=True)
+except:
+    pass
+
 from cybersecurity_bot.core.detector import scan_for_malware
 from cybersecurity_bot.utils.notifier import send_alert
 from cybersecurity_bot.utils.logger import log_detection
@@ -31,6 +37,7 @@ class SimpleCybersecurityBotGUI:
         self.root.title("🛡️ Cybersecurity Bot - Simple Version")
         self.root.geometry("1000x700")
         self.root.configure(bg='#0a0a0a')
+        self.current_process = None  # Store reference to current main.py process
         
         # Colors
         self.colors = {
@@ -54,15 +61,10 @@ class SimpleCybersecurityBotGUI:
         self.message_queue = queue.Queue()
         self.stop_event = threading.Event()
         
-        # Configuration
-        self.config = {
-            'monitor_interval': 5,
-            'risk_threshold': 0.7,
-            'email_alerts': True,
-            'popup_alerts': True
-        }
+        # Initialize configuration
+        self.load_config()
         
-        # Variables
+        # Variables from config
         self.interval_var = tk.StringVar(value=str(self.config['monitor_interval']))
         self.threshold_var = tk.StringVar(value=str(self.config['risk_threshold']))
         self.email_var = tk.BooleanVar(value=self.config['email_alerts'])
@@ -70,6 +72,28 @@ class SimpleCybersecurityBotGUI:
         
         self.setup_ui()
         self.check_queue()
+
+    def load_config(self):
+        """Load configuration from config.yaml"""
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+                
+            # Configuration with defaults
+            self.config = {
+                'monitor_interval': config_data.get('monitor_interval_seconds', 5),
+                'risk_threshold': config_data.get('risk_score_kill_threshold', 0.7),
+                'email_alerts': config_data.get('email_alerts', True),
+                'popup_alerts': config_data.get('popups', True)
+            }
+        except Exception as e:
+            print(f"Error loading config: {e}, using defaults")
+            self.config = {
+                'monitor_interval': 5,
+                'risk_threshold': 0.7,
+                'email_alerts': True,
+                'popup_alerts': True
+            }
         
     def setup_ui(self):
         # Main title
@@ -365,20 +389,122 @@ class SimpleCybersecurityBotGUI:
         
         self.log_text.insert(tk.END, log_entry)
         self.log_text.see(tk.END)
+        print(log_entry.strip())  # Also print to terminal
         
     def clear_log(self):
         """Clear the log display"""
         self.log_text.delete("1.0", tk.END)
         
+    def monitor_loop(self):
+        """Main monitoring loop (runs in separate thread)"""
+        # Import at module level to avoid import errors
+        from cybersecurity_bot.core.detector import scan_for_malware
+        from cybersecurity_bot.utils.emailer import send_email_alert
+        
+        self.log_message("🛡️ Cybersecurity Bot monitoring started")
+        scan_count = 0
+        last_all_clear_time = 0
+        self.threat_count = 0  # Reset threat counter
+        
+        # Send startup email if enabled
+        if self.config['email_alerts']:
+            try:
+                startup_message = (
+                    "The Cybersecurity Bot has started monitoring your system.\n\n"
+                    "Current Configuration:\n"
+                    f"- Monitor Interval: {self.config['monitor_interval']} seconds\n"
+                    f"- Risk Threshold: {self.config['risk_threshold']}\n"
+                    f"- Email Alerts: {'Enabled' if self.config['email_alerts'] else 'Disabled'}\n"
+                    f"- Popup Alerts: {'Enabled' if self.config['popup_alerts'] else 'Disabled'}"
+                )
+                send_email_alert(
+                    subject="🛡️ Cybersecurity Bot Started",
+                    body=startup_message
+                )
+                self.log_message("📧 Startup email sent")
+            except Exception as e:
+                self.log_message(f"❌ Failed to send startup email: {e}")
+        
+        try:
+            
+            while not self.stop_event.is_set():
+                scan_count += 1
+                print(f"\n🔍 Starting scan #{scan_count}...")
+                
+                suspicious_processes = scan_for_malware(self.stop_event)
+                processes_checked = 0
+                
+                try:
+                    total_processes = len(list(psutil.process_iter(['pid', 'name'])))
+                    print(f"📊 Total processes to scan: {total_processes}")
+                except:
+                    total_processes = 0
+                    print("⚠️ Could not determine total process count")
+                
+                for process in suspicious_processes:
+                    if self.stop_event.is_set():
+                        break
+                        
+                    processes_checked += 1
+                    if processes_checked % 10 == 0:
+                        print(f"✓ Checked {processes_checked} processes...")
+                        
+                    # Process suspicious process here...
+                    try:
+                        name = process.name()
+                        pid = process.pid
+                        cpu = process.cpu_percent(interval=0.1)
+                        memory = process.memory_percent()
+                        
+                        # Add to process tree in GUI
+                        risk_score = predict_process_risk([[cpu, memory, process.num_threads(), len(process.connections())]])
+                        
+                        self.root.after(0, lambda: self.handle_threat_detected(process))
+                        
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                
+                # Print scan completion message
+                print(f"✅ Scan #{scan_count} completed! Checked {processes_checked} processes.")
+                
+                # If no suspicious processes were found, update status
+                if not suspicious_processes:
+                    print("🟢 No suspicious processes found!")
+                    current_time = time.time()
+                    if current_time - last_all_clear_time >= 3600:  # Every hour
+                        self.root.after(0, lambda: self.log_message("✅ System scan completed - No threats detected"))
+                        last_all_clear_time = current_time
+                elif suspicious_processes:
+                    print(f"⚠️ Found {len(suspicious_processes)} suspicious processes in this scan.")
+                
+                # Wait for next scan
+                print(f"\n⏳ Waiting {self.config['monitor_interval']} seconds until next scan...")
+                for _ in range(self.config['monitor_interval']):
+                    if self.stop_event.is_set():
+                        break
+                    time.sleep(1)
+
+        except Exception as e:
+            self.log_message(f"❌ Error in monitoring loop: {str(e)}")
+        finally:
+            if not self.stop_event.is_set():
+                self.root.after(0, lambda: self.status_label.config(text="🔴 STOPPED", fg=self.colors['danger']))
+                self.root.after(0, lambda: self.start_button.config(state='normal'))
+                self.root.after(0, lambda: self.stop_button.config(state='disabled'))
+                self.log_message("⏹️ Monitoring stopped due to error")
+            
     def start_monitoring(self):
-        """Start the monitoring thread"""
+        """Start the monitoring using main.py"""
         if self.is_monitoring:
             return
         if self.monitor_thread is not None and self.monitor_thread.is_alive():
             return
+            
         try:
             self.is_monitoring = True
             self.stop_event.clear()
+            
+            # Start main.py in a separate thread
             self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
             self.monitor_thread.start()
             
@@ -387,6 +513,7 @@ class SimpleCybersecurityBotGUI:
             self.stop_button.config(state='normal')
             
             self.log_message("🛡️ Cybersecurity Bot monitoring started")
+            
         except Exception as e:
             self.is_monitoring = False
             self.log_message(f"❌ Failed to start monitoring: {e}")
@@ -396,6 +523,15 @@ class SimpleCybersecurityBotGUI:
         if self.is_monitoring:
             self.is_monitoring = False
             self.stop_event.set()
+            
+            self.log_message("🛑 Stopping Cybersecurity Bot...")
+            
+            try:
+                if self.monitor_thread is not None:
+                    self.monitor_thread.join(timeout=5.0)
+            except Exception as e:
+                print(f"Error stopping monitor thread: {e}")
+            
             try:
                 if self.monitor_thread is not None:
                     self.monitor_thread.join(timeout=1.0)
@@ -409,61 +545,49 @@ class SimpleCybersecurityBotGUI:
             self.log_message("⏹️ Cybersecurity Bot monitoring stopped")
             
     def quick_scan(self):
-        """Perform a quick scan without starting continuous monitoring"""
-        self.log_message("🔍 Performing quick scan...")
+        """Perform a quick scan directly"""
+        if self.is_monitoring:
+            self.log_message("⚠️ Please stop monitoring first before running a quick scan")
+            return
+            
+        self.log_message("🔍 Starting quick scan...")
         
-        def scan():
+        def run_quick_scan():
             try:
-                suspicious_processes = scan_for_malware()
-                self.message_queue.put(('scan_result', len(suspicious_processes)))
+                from cybersecurity_bot.core.detector import scan_for_malware
                 
-                for process in suspicious_processes:
-                    self.message_queue.put(('threat_detected', process))
+                suspicious_processes = scan_for_malware(threading.Event())  # New event for quick scan
+                processes_checked = 0
+                threats_found = 0
+                
+                try:
+                    total_processes = len(list(psutil.process_iter(['pid', 'name'])))
+                    self.log_message(f"📊 Total processes to scan: {total_processes}")
+                except:
+                    self.log_message("⚠️ Could not determine total process count")
                     
-            except Exception as e:
-                self.message_queue.put(('error', f"Scan error: {e}"))
-                
-        threading.Thread(target=scan, daemon=True).start()
-        
-    def monitor_loop(self):
-        """Main monitoring loop (runs in separate thread)"""
-        while not self.stop_event.is_set():
-            try:
-                # Update configuration
-                self.config['monitor_interval'] = int(self.interval_var.get())
-                self.config['risk_threshold'] = float(self.threshold_var.get())
-                self.config['email_alerts'] = self.email_var.get()
-                self.config['popup_alerts'] = self.popup_var.get()
-                
-                # Perform scan in a short-lived thread so Stop can cancel promptly
-                suspicious_processes = []
-                def _do_scan():
+                for process in suspicious_processes:
+                    processes_checked += 1
+                    if processes_checked % 10 == 0:
+                        self.log_message(f"✓ Checked {processes_checked} processes...")
+                        
                     try:
-                        res = scan_for_malware(self.stop_event)
-                        suspicious_processes.extend(res or [])
-                    except Exception as _e:
-                        self.message_queue.put(('error', f"Scan error: {_e}"))
-                t = threading.Thread(target=_do_scan, daemon=True)
-                t.start()
-                while t.is_alive():
-                    if self.stop_event.wait(0.1):
-                        return
-                    time.sleep(0.05)
-                self.message_queue.put(('scan_complete', len(suspicious_processes)))
-                
-                # Process each suspicious process
-                for process in suspicious_processes:
-                    self.message_queue.put(('threat_detected', process))
+                        self.handle_threat_detected(process)
+                        threats_found += 1
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
                     
-                # Wait for next scan
-                if self.stop_event.wait(self.config['monitor_interval']):
-                    break
+                self.log_message(f"✅ Quick scan complete! Checked {processes_checked} processes.")
+                if threats_found > 0:
+                    self.log_message(f"⚠️ Found {threats_found} suspicious processes.")
+                else:
+                    self.log_message("🟢 No suspicious processes found!")
                 
             except Exception as e:
-                self.message_queue.put(('error', f"Monitoring error: {e}"))
-                if self.stop_event.wait(5):
-                    break
+                self.log_message(f"❌ Quick scan error: {str(e)}")
                 
+        threading.Thread(target=run_quick_scan, daemon=True).start()
+            
     def check_queue(self):
         """Check for messages from monitoring thread"""
         try:
@@ -479,6 +603,15 @@ class SimpleCybersecurityBotGUI:
                 elif message_type == 'error':
                     self.log_message(f"❌ {data}")
                     
+                elif message_type == 'log':
+                    self.log_message(data)
+                    
+                elif message_type == 'monitoring_stopped':
+                    self.is_monitoring = False
+                    self.status_label.config(text="🔴 STOPPED", fg=self.colors['danger'])
+                    self.start_button.config(state='normal')
+                    self.stop_button.config(state='disabled')
+                    
         except queue.Empty:
             pass
             
@@ -492,6 +625,11 @@ class SimpleCybersecurityBotGUI:
             process_name = process.name()
             
             # Get process info
+            try:
+                file_path = process.exe()
+            except:
+                file_path = "Unknown"
+                
             cpu = process.cpu_percent(interval=0.1)
             memory = process.memory_percent()
             
@@ -521,14 +659,69 @@ class SimpleCybersecurityBotGUI:
             # Log the detection
             self.log_message(f"🚨 Threat detected: {process_name} (PID: {pid}) - Risk: {risk_score:.2f}")
             
-            # Send alerts if enabled
-            if self.config['popup_alerts']:
-                send_alert(process_name, pid)
-                
+            # Prepare alert message
+            alert_message = (
+                f"Suspicious process detected:\n"
+                f"Name: {process_name}\n"
+                f"PID: {pid}\n"
+                f"CPU: {cpu:.1f}%\n"
+                f"Memory: {memory:.1f}%\n"
+                f"Risk Score: {risk_score:.2f}\n"
+                f"Status: {status}"
+            )
+            
+            # Send email alert if enabled
             if self.config['email_alerts']:
-                email_body = f"Threat detected: {process_name} (PID: {pid})\nRisk Score: {risk_score:.2f}"
-                send_email_alert("⚠️ Threat Detected", email_body)
-                
+                try:
+                    send_email_alert(
+                        subject=f"⚠️ Security Alert: {status} Process Detected",
+                        body=alert_message
+                    )
+                    self.log_message("📧 Email alert sent")
+                except Exception as e:
+                    self.log_message(f"❌ Failed to send email alert: {e}")
+            
+            # Show popup alert if enabled
+            if self.config['popup_alerts']:
+                try:
+                    # Use after to show popup in main thread
+                    self.root.after(0, lambda: send_alert(process_name, pid))
+                    self.log_message("🔔 Popup alert shown")
+                except Exception as e:
+                    self.log_message(f"❌ Failed to show popup alert: {e}")
+            
+            # Email alert
+            if self.config['email_alerts']:
+                try:
+                    alert_msg = (
+                        f"Suspicious process detected!\n\n"
+                        f"Process Details:\n"
+                        f"Name: {process_name}\n"
+                        f"PID: {pid}\n"
+                        f"Path: {file_path}\n"
+                        f"CPU Usage: {cpu:.1f}%\n"
+                        f"Memory Usage: {memory:.1f}%\n"
+                        f"Threads: {num_threads}\n"
+                        f"Network Connections: {num_connections}\n"
+                        f"Risk Score: {risk_score:.2f}\n"
+                        f"Status: {status}\n\n"
+                        f"Actions Taken: {'Process will be terminated' if risk_score > self.config['risk_threshold'] else 'Process is being monitored'}"
+                    )
+                    send_email_alert(
+                        subject=f"⚠️ Security Alert: Suspicious Process Detected",
+                        body=alert_msg
+                    )
+                except Exception as e:
+                    self.log_message(f"Failed to send email alert: {e}")
+
+            # Popup alert
+            if self.config['popup_alerts']:
+                try:
+                    alert_msg = f"Name: {process_name}\nPID: {pid}\nRisk Score: {risk_score:.2f}"
+                    send_alert(process_name, pid)
+                except Exception as e:
+                    self.log_message(f"Failed to show popup alert: {e}")
+
             # Auto-kill if high risk
             if risk_score > self.config['risk_threshold']:
                 self.log_message(f"🔪 Auto-killing high-risk process: {process_name}")
@@ -540,14 +733,33 @@ class SimpleCybersecurityBotGUI:
     def save_config(self):
         """Save configuration to file"""
         try:
+            # Validate values before saving
+            try:
+                monitor_interval = int(self.interval_var.get())
+                if monitor_interval < 1:
+                    raise ValueError("Monitor interval must be at least 1 second")
+                    
+                risk_threshold = float(self.threshold_var.get())
+                if not 0 <= risk_threshold <= 1:
+                    raise ValueError("Risk threshold must be between 0 and 1")
+                    
+                # Update local config
+                self.config['monitor_interval'] = monitor_interval
+                self.config['risk_threshold'] = risk_threshold
+                self.config['email_alerts'] = self.email_var.get()
+                self.config['popup_alerts'] = self.popup_var.get()
+            except ValueError as e:
+                messagebox.showerror("Invalid Value", str(e))
+                return
+                
+            # Save to file
             config_data = {
-                'monitor_interval_seconds': int(self.interval_var.get()),
-                'risk_score_kill_threshold': float(self.threshold_var.get()),
-                'email_alerts': self.email_var.get(),
-                'popups': self.popup_var.get()
+                'monitor_interval_seconds': self.config['monitor_interval'],
+                'risk_score_kill_threshold': self.config['risk_threshold'],
+                'email_alerts': self.config['email_alerts'],
+                'popups': self.config['popup_alerts']
             }
             
-            import yaml
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.dump(config_data, f)
                 
@@ -564,12 +776,48 @@ def main():
     
     # Handle window closing
     def on_closing():
-        if app.is_monitoring:
-            app.stop_monitoring()
-        root.destroy()
+        try:
+            if app.is_monitoring:
+                app.stop_monitoring()
+                time.sleep(1)  # Wait for process cleanup
+            
+            # Clean up lock file one last time
+            LOCK_PATH.unlink(missing_ok=True)
+            
+            root.destroy()
+            # Force exit after 2 seconds if normal shutdown fails
+            import threading
+            threading.Timer(2.0, lambda: os._exit(0)).start()
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+            os._exit(1)
+        
+    def force_exit(e=None):
+        # Handle Ctrl+C in GUI
+        try:
+            if app.is_monitoring:
+                app.stop_monitoring()
+                time.sleep(1)  # Wait for process cleanup
+            
+            # Clean up lock file one last time
+            LOCK_PATH.unlink(missing_ok=True)
+            
+            root.destroy()
+            os._exit(0)
+        except Exception as e:
+            print(f"Error during force exit: {e}")
+            os._exit(1)
         
     root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+    root.bind('<Control-c>', force_exit)
+    
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        force_exit()
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+        force_exit()
 
 if __name__ == "__main__":
     main()

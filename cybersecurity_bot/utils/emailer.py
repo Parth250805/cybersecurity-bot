@@ -7,9 +7,11 @@ from dotenv import load_dotenv
 # Load credentials from .env file
 load_dotenv()
 
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+EMAIL_TO = os.getenv("EMAIL_TO")
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = os.getenv("SMTP_PORT")
 
 def send_email_alert(subject: str, body: str):
     """
@@ -17,26 +19,26 @@ def send_email_alert(subject: str, body: str):
     Requires valid credentials in your .env file.
     """
 
-    if not EMAIL_SENDER or not EMAIL_PASSWORD or not EMAIL_RECEIVER:
+    if not SMTP_USER or not SMTP_PASSWORD or not EMAIL_TO:
         print("⚠️ Email credentials missing in .env file. Skipping email alert.")
         return
 
     try:
         # Create email structure
         msg = MIMEMultipart()
-        msg["From"] = EMAIL_SENDER
-        msg["To"] = EMAIL_RECEIVER
+        msg["From"] = SMTP_USER
+        msg["To"] = EMAIL_TO
         msg["Subject"] = subject
 
         msg.attach(MIMEText(body, "plain"))
 
-        # Connect to mail server (Gmail example)
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        # Connect to mail server
+        with smtplib.SMTP(SMTP_HOST, int(SMTP_PORT)) as server:
             server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
 
-        print(f"📧 Email alert sent to {EMAIL_RECEIVER}")
+        print(f"📧 Email alert sent to {EMAIL_TO}")
 
     except smtplib.SMTPAuthenticationError:
         print("❌ SMTP Authentication failed! Check your email or app password.")

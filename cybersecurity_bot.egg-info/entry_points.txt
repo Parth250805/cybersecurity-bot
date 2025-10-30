@@ -1,0 +1,2 @@
+[console_scripts]
+cybersecurity-bot = cybersecurity_bot.gui.simple_gui:main

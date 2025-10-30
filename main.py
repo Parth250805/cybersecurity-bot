@@ -1,5 +1,11 @@
 import os
 import sys
+import io
+
+# Force UTF-8 encoding for stdout
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 from pathlib import Path
 
 # Ensure we run with the project's virtual environment so dependencies are available
@@ -60,11 +66,43 @@ try:
 except Exception:
     DEBUG = False
 
+def send_status_email(status="ok", details=None):
+    """Send a status email about the system state"""
+    if status == "start":
+        subject = "🟢 Cybersecurity Bot Started"
+        body = "The Cybersecurity Bot has started monitoring your system.\n\nConfiguration:\n"
+        body += f"- Monitor Interval: {MONITOR_INTERVAL} seconds\n"
+        body += f"- Risk Score Threshold: {RISK_SCORE_KILL_THRESHOLD}\n"
+        body += f"- Email Alerts: {'Enabled' if EMAIL_ALERTS else 'Disabled'}\n"
+        body += f"- Popup Alerts: {'Enabled' if POPUP_ALERTS else 'Disabled'}\n"
+    elif status == "stop":
+        subject = "🔴 Cybersecurity Bot Stopped"
+        body = "The Cybersecurity Bot has stopped monitoring your system.\n"
+        if details:
+            body += f"\nReason: {details}"
+    else:  # status == "ok"
+        subject = "✅ System Security Status: All Clear"
+        body = "No suspicious activities detected in the last scan.\n\nSystem Status:\n"
+        try:
+            cpu = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            body += f"- CPU Usage: {cpu}%\n"
+            body += f"- Memory Usage: {memory.percent}%\n"
+        except:
+            body += "- System metrics unavailable\n"
+
+    send_email_alert(subject, body)
+
 print(f"🛡️ Cybersecurity Bot is now monitoring your system...")
 if DEBUG:
     print(f"✅ Using config file: {CONFIG_PATH}")
 
+# Send startup email
+send_status_email("start")
+
 handled_pids = set()
+scan_count = 0
+last_all_clear_time = 0
 
 # === Graceful shutdown via Ctrl+C ===
 stop_event = threading.Event()
@@ -73,8 +111,12 @@ def _handle_sigint(signum, frame):
     try:
         stop_event.set()
         print("\n🛑 Stopping... (Ctrl+C)")
+        send_status_email("stop", "User interrupted (Ctrl+C)")
+        # Force exit after 3 seconds if normal shutdown fails
+        import threading
+        threading.Timer(3.0, lambda: os._exit(0)).start()
     except Exception:
-        pass
+        os._exit(0)
 
 try:
     signal.signal(signal.SIGINT, _handle_sigint)
@@ -86,19 +128,46 @@ except Exception:
 LOCK_PATH = PROJECT_ROOT / ".run.lock"
 _lock_fd = None
 try:
+    # Allow restarting by always removing stale lock file
+    try:
+        if LOCK_PATH.exists():
+            LOCK_PATH.unlink()
+    except:
+        pass
+    
+    # Create new lock file
     try:
         _lock_fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
         print("⚠️ Another instance is already running. Exiting.")
         sys.exit(0)
 
+    # Check if this is a quick scan
+    QUICK_SCAN = bool(int(os.environ.get("CSBOT_QUICK_SCAN", "0")))
+    
     # === MAIN LOOP ===
     while not stop_event.is_set():
+        scan_count += 1
+        print(f"\n🔍 {'Quick Scan' if QUICK_SCAN else f'Starting scan #{scan_count}'}...")
+        
         suspicious_processes = scan_for_malware(stop_event)
+        processes_checked = 0
+        
+        # Count total processes for progress
+        try:
+            total_processes = len(list(psutil.process_iter(['pid', 'name'])))
+            print(f"📊 Total processes to scan: {total_processes}")
+        except:
+            total_processes = 0
+            print("⚠️ Could not determine total process count")
 
         for process in suspicious_processes:
             if stop_event.is_set():
                 break
+                
+            processes_checked += 1
+            if processes_checked % 10 == 0:  # Show progress every 10 processes
+                print(f"✓ Checked {processes_checked} processes...")
             pid = process.pid
             process_name = process.name()
 
@@ -168,13 +237,36 @@ try:
 
             handled_pids.add(pid)
 
+        # Print scan completion message
+        print(f"✅ Scan #{scan_count} completed! Checked {processes_checked} processes.")
+        
+        # If no suspicious processes were found, send all-clear email every hour
+        current_time = time.time()
+        if not suspicious_processes and (current_time - last_all_clear_time >= 3600):  # 3600 seconds = 1 hour
+            print("🟢 No suspicious processes found!")
+            send_status_email("ok")
+            last_all_clear_time = current_time
+        elif suspicious_processes:
+            print(f"⚠️ Found {len(suspicious_processes)} suspicious processes in this scan.")
+
+        # If quick scan, exit after one scan
+        if QUICK_SCAN:
+            print("\n✅ Quick scan completed!")
+            break
+            
+        # Wait for next scan
+        print(f"\n⏳ Waiting {MONITOR_INTERVAL} seconds until next scan...")
         if stop_event.wait(MONITOR_INTERVAL):
             break
 except KeyboardInterrupt:
     print("\n🛑 Stopped by user.")
+    send_status_email("stop", "User stopped the bot")
 except Exception as e:
-    print(f"❌ Error in monitoring loop: {e}")
+    error_msg = f"❌ Error in monitoring loop: {e}"
+    print(error_msg)
+    send_status_email("stop", error_msg)
 finally:
+    print("\n👋 Cybersecurity Bot shutting down...")
     try:
         if _lock_fd is not None:
             os.close(_lock_fd)

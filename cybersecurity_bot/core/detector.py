@@ -3,6 +3,8 @@ import psutil
 import yaml
 import sys
 import io
+import time
+from threading import Event
 
 # Force UTF-8 encoding for stdout
 if sys.stdout.encoding != 'utf-8':
@@ -24,6 +26,46 @@ SUSPICIOUS_KEYWORDS = [
     "malware", "keylogger", "stealer", "ransom",
     "rat", "spy", "inject", "virus", "hack", "ddos",
 ]
+
+def monitor_processes(stop_event, config, callback=None):
+    """
+    Continuously monitor processes for suspicious activity.
+    
+    Args:
+        stop_event: Threading event to control monitoring
+        config: Dictionary containing monitoring configuration
+        callback: Optional callback function for status updates
+    """
+    scan_count = 0
+    last_all_clear_time = 0
+    
+    while not stop_event.is_set():
+        scan_count += 1
+        if callback:
+            callback("scan_start", {"count": scan_count})
+            
+        suspicious_processes = scan_for_malware(stop_event)
+        current_time = time.time()
+        
+        if suspicious_processes:
+            if callback:
+                callback("threats_found", {
+                    "count": len(suspicious_processes),
+                    "processes": suspicious_processes
+                })
+        elif current_time - last_all_clear_time >= 3600:  # Hourly all-clear
+            if callback:
+                callback("all_clear", None)
+            last_all_clear_time = current_time
+            
+        if callback:
+            callback("scan_complete", {"count": scan_count})
+            
+        # Wait for next scan
+        for _ in range(config.get('monitor_interval_seconds', 5)):
+            if stop_event.is_set():
+                break
+            time.sleep(1)
 
 def scan_for_malware(stop_event=None):
     suspicious = []

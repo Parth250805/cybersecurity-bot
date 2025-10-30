@@ -16,6 +16,7 @@ cybersecurity_bot/core/feature_collector.py
 cybersecurity_bot/core/generate_benign_data.py
 cybersecurity_bot/core/generate_malicious_data.py
 cybersecurity_bot/core/predictor.py
+cybersecurity_bot/core/threat_handler.py
 cybersecurity_bot/core/train_model.py
 cybersecurity_bot/data/__init__.py
 cybersecurity_bot/gui/__init__.py

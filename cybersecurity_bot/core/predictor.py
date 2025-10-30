@@ -2,7 +2,8 @@ import pandas as pd
 import joblib
 import os
 
-MODEL_PATH = 'malware_model.pkl'
+from pathlib import Path
+MODEL_PATH = Path(__file__).resolve().parent / 'malware_model.pkl'
 
 def predict_process_risk(features):
     """
